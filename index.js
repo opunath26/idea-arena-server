@@ -33,7 +33,16 @@ async function run() {
 
     // contests api
     app.get('/contests', async (req, res) => {
-        
+        const query = {}
+        const {email} = req.query;
+
+        if(email){
+            query.creatorEmail = email;
+        }
+
+        const cursor = contestsCollection.find(query);
+        const result = await cursor.toArray();
+        res.send(result);
     })
 
     app.post('/contests', async (req, res) => {
