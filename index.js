@@ -10,7 +10,7 @@ const port = process.env.PORT || 3000
 
 const crypto = require("crypto");
 
-function generateTrackingId(){
+function generateTrackingId() {
     const prefix = "PRCL";
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     const random = crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -156,7 +156,24 @@ async function run() {
             const sessionId = req.query.session_id;
 
             const session = await stripe.checkout.sessions.retrieve(sessionId);
-            console.log('session retrieve', session);
+
+            // console.log('session retrieve', session);
+            const transactionId = session.payment_intent;
+            const query = { transactionId: transactionId }
+
+            const paymentExist = await paymentCollection.findOne(query);
+            console.log(paymentExist);
+            
+
+            if(paymentExist){
+                return res.send({message: 'already exists', 
+                    transactionId, 
+                    trackingId: paymentExist.trackingId 
+                })
+            }
+
+
+
             const trackingId = generateTrackingId()
 
             if (session.payment_status === 'paid') {
@@ -179,17 +196,20 @@ async function run() {
                     contestTitle: session.metadata.contestTitle,
                     transactionId: session.payment_intent,
                     paymentStatus: session.payment_status,
-                    paidAt: new Date()
+                    paidAt: new Date(),
+                    trackingId: trackingId
                 }
 
                 if (session.payment_status === 'paid') {
                     const resultPayment = await paymentCollection.insertOne(payment)
 
-                    res.send({ success: true, 
+                    res.send({
+                        success: true,
                         modifyContest: result,
                         trackingId: trackingId,
                         transactionId: session.payment_intent,
-                        paymentInfo: resultPayment })
+                        paymentInfo: resultPayment
+                    })
                 }
             }
 
