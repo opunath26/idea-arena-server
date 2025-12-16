@@ -8,6 +8,17 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
 const port = process.env.PORT || 3000
 
+const crypto = require("crypto");
+
+function generateTrackingId(){
+    const prefix = "PRCL";
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const random = crypto.randomBytes(3).toString("hex").toUpperCase();
+
+
+    return `${prefix}-$date-${random}`;
+}
+
 // middleware
 app.use(express.json());
 app.use(cors());
@@ -32,6 +43,7 @@ async function run() {
 
         const db = client.db('idea_arena_db');
         const contestsCollection = db.collection('contests');
+        const paymentCollection = db.collection('payment');
 
 
         // contests api
@@ -75,7 +87,38 @@ async function run() {
         });
 
 
-        // payment
+        // PAYMENTS 
+        app.post('/payment-checkout-session', async (req, res) => {
+            const paymentInfo = req.body;
+            const amount = parseInt(paymentInfo.contestCreationFee) * 100;
+
+            const session = await stripe.checkout.sessions.create({
+                line_items: [
+                    {
+                        price_data: {
+                            currency: 'usd',
+                            unit_amount: amount,
+                            product_data: {
+                                name: `Please pay for: ${paymentInfo.contestTitle}`
+                            }
+                        },
+                        quantity: 1,
+                    },
+                ],
+                mode: 'payment',
+                customer_email: paymentInfo.creatorEmail,
+                metadata: {
+                    contestId: paymentInfo.contestId
+                },
+                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+            });
+
+            res.send({ url: session.url })
+
+        })
+
+        // old
         app.post('/create-checkout-session', async (req, res) => {
             const paymentInfo = req.body;
             const amount = parseInt(paymentInfo.contestCreationFee) * 100;
@@ -84,7 +127,7 @@ async function run() {
                 line_items: [
                     {
                         price_data: {
-                            currency: 'USD',
+                            currency: 'usd',
                             unit_amount: amount,
                             product_data: {
                                 name: paymentInfo.contestTitle
@@ -97,7 +140,8 @@ async function run() {
                 customer_email: paymentInfo.creatorEmail,
                 mode: 'payment',
                 metadata: {
-                    contestId: paymentInfo.contestId
+                    contestId: paymentInfo.contestId,
+                    contestTitle: paymentInfo.contestTitle
                 },
                 success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
                 cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
@@ -106,6 +150,50 @@ async function run() {
             console.log(session)
             res.send({ url: session.url })
 
+        })
+
+        app.patch('/payment-success', async (req, res) => {
+            const sessionId = req.query.session_id;
+
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            console.log('session retrieve', session);
+            const trackingId = generateTrackingId()
+
+            if (session.payment_status === 'paid') {
+                const id = session.metadata.contestId;
+                const query = { _id: new ObjectId(id) }
+                const update = {
+                    $set: {
+                        paymentStatus: 'paid',
+                        trackingId: trackingId
+                    }
+                }
+
+                const result = await contestsCollection.updateOne(query, update);
+
+                const payment = {
+                    amount: session.amount_total / 100,
+                    session: session.currency,
+                    customerEmail: session.customer_email,
+                    contestId: session.metadata.contestId,
+                    contestTitle: session.metadata.contestTitle,
+                    transactionId: session.payment_intent,
+                    paymentStatus: session.payment_status,
+                    paidAt: new Date()
+                }
+
+                if (session.payment_status === 'paid') {
+                    const resultPayment = await paymentCollection.insertOne(payment)
+
+                    res.send({ success: true, 
+                        modifyContest: result,
+                        trackingId: trackingId,
+                        transactionId: session.payment_intent,
+                        paymentInfo: resultPayment })
+                }
+            }
+
+            res.send({ success: false })
         })
 
 
