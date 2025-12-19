@@ -11,7 +11,7 @@ const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./idea-arena-firebase-adminsdk.json");
+
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -69,8 +69,75 @@ async function run() {
         await client.connect();
 
         const db = client.db('idea_arena_db');
+        const userCollection = db.collection('users');
         const contestsCollection = db.collection('contests');
         const paymentCollection = db.collection('payment');
+        const candidatesCollection = db.collection('candidates');
+
+        // middle admin before allowing admin activity
+        // must be used after verifyFBToken middleware
+        const verifyAdmin = async(req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email };
+            const user = await userCollection.findOne(query);
+
+            if (!user || user.role !== 'admin') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+
+            next();
+        }
+
+
+        // users related apis
+        app.get('/users', verifyFBToken, async (req, res) => {
+            const cursor = userCollection.find();
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+        app.get('/users/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
+            const result = await userCollection.findOne(query);
+            res.send(result);
+        })
+
+        app.get('/users/:email/role', async (req, res) => {
+            const email = req.params.email;
+            const query = { email }
+            const user = await userCollection.findOne(query);
+            res.send({ role: user?.role || 'user'});
+        })
+
+        app.post('/users', async (req, res) => {
+            const user = req.body;
+            user.role = 'user';
+            user.createAt = new Date();
+            const email = user.email;
+            const userExists = await userCollection.findOne({ email })
+
+            if (userExists) {
+                return res.send({ message: 'user exists' })
+            }
+
+            const result = await userCollection.insertOne(user);
+            res.send(result);
+        })
+
+        app.patch('/users/:id/role', verifyFBToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const roleInfo = req.body;
+            const query = { _id: new ObjectId(id) }
+            const updateDoc = {
+                $set: {
+                    role: roleInfo.role
+                }
+            }
+            const result = await userCollection.updateOne(query, updateDoc);
+            res.send(result);
+        })
+
 
 
         // contests api
@@ -259,11 +326,65 @@ async function run() {
                     return res.status(403).send({ message: 'forbidden access' })
                 }
             }
-            const cursor = paymentCollection.find(query).sort({paidAt: -1});
+            const cursor = paymentCollection.find(query).sort({ paidAt: -1 });
             const result = await cursor.toArray();
             res.send(result);
         })
 
+        // Candidates related apis
+        app.get('/candidates', async (req, res) => {
+            const query = {}
+            if (req.query.status) {
+                query.status = req.query.status;
+            }
+            const cursor = candidatesCollection.find(query)
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+
+        app.post('/candidates', async (req, res) => {
+            const candidate = req.body;
+            candidate.status = 'pending';
+            candidate.createAt = new Date();
+
+            const result = await candidatesCollection.insertOne(candidate);
+            res.send(result);
+        })
+
+        app.patch('/candidates/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+            const status = req.body.status;
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
+            const updateDoc = {
+                $set: {
+                    status: status
+                }
+            }
+
+            const result = await candidatesCollection.updateOne(query, updateDoc);
+
+            if (status === 'approved') {
+                const email = req.body.email;
+                const userQuery = { email  }
+                const updateUser = {
+                    $set: {
+                        role: 'candidate'
+                    }
+                }
+                const userResult = await userCollection.updateOne(userQuery, updateUser);
+            }
+
+            res.send(result);
+        })
+
+        app.delete('/candidates/:id', verifyFBToken, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const result = await candidatesCollection.deleteOne(query);
+            res.send(result);
+        });
 
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
