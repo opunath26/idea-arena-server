@@ -11,7 +11,8 @@ const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 
-
+const serviceAccount = require("./idea-arena-firebase-adminsdk.json");
+const { create } = require('domain');
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -73,10 +74,11 @@ async function run() {
         const contestsCollection = db.collection('contests');
         const paymentCollection = db.collection('payment');
         const candidatesCollection = db.collection('candidates');
+        const trackingCollection = db.collection('trackings');
 
         // middle admin before allowing admin activity
         // must be used after verifyFBToken middleware
-        const verifyAdmin = async(req, res, next) => {
+        const verifyAdmin = async (req, res, next) => {
             const email = req.decoded_email;
             const query = { email };
             const user = await userCollection.findOne(query);
@@ -88,10 +90,34 @@ async function run() {
             next();
         }
 
+        const logTracking = async (trackingId, status) => {
+            const log = {
+                trackingId,
+                status,
+                details: status.split('-').join(' '),
+                createAt: new Date()
+            }
+            const result = await trackingCollection.insertOne(log);
+            return result;
+        }
+
 
         // users related apis
         app.get('/users', verifyFBToken, async (req, res) => {
-            const cursor = userCollection.find();
+
+            const searchText = req.query.searchText;
+            const query = {};
+
+            if (searchText) {
+                // query.displayName = {$regex: searchText, $options: 'i' }
+
+                query.$or = [
+                    { displayName: { $regex: searchText, $options: 'i' } },
+                    { email: { $regex: searchText, $options: 'i' } }
+                ]
+            }
+
+            const cursor = userCollection.find(query).sort({ createAt: -1 }).limit(5);
             const result = await cursor.toArray();
             res.send(result);
         })
@@ -107,7 +133,7 @@ async function run() {
             const email = req.params.email;
             const query = { email }
             const user = await userCollection.findOne(query);
-            res.send({ role: user?.role || 'user'});
+            res.send({ role: user?.role || 'user' });
         })
 
         app.post('/users', async (req, res) => {
@@ -143,15 +169,38 @@ async function run() {
         // contests api
         app.get('/contests', async (req, res) => {
             const query = {}
-            const { email } = req.query;
+            const { email, submitStatus } = req.query;
 
             if (email) {
                 query.creatorEmail = email;
             }
 
+            if (submitStatus) {
+                query.submitStatus = submitStatus;
+            }
+
             const options = { sort: { createAt: -1 } }
 
             const cursor = contestsCollection.find(query, options);
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+        app.get('/contests/candidate', async (req, res) => {
+            const { candidateEmail, submitStatus } = req.query;
+            const query = {}
+            if (candidateEmail) {
+                query.candidateEmail = candidateEmail
+            }
+            if (submitStatus !== 'prize-delivered') {
+                // query.submitStatus = {$in: ['candidate-assigned', 'submission-approved']}
+                query.submitStatus = { $nin: ['prize-delivered'] }
+            }
+            else{
+                query.submitStatus = submitStatus;
+            }
+
+            const cursor = contestsCollection.find(query);
             const result = await cursor.toArray();
             res.send(result);
         })
@@ -172,6 +221,67 @@ async function run() {
             res.send(result)
         })
 
+        // TODO: rename this to be specific like /contests/:id/assigned
+        app.patch('/contests/:id', async (req, res) => {
+            const { candidateId, candidateName, candidateEmail, trackingId } = req.body;
+
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) }
+            const updateDoc = {
+                $set: {
+                    submitStatus: 'candidate-assigned',
+                    candidateId: candidateId,
+                    candidateName: candidateName,
+                    candidateEmail: candidateEmail
+                }
+            }
+            const result = await contestsCollection.updateOne(query, updateDoc);
+
+            // update candidate information
+            const candidateQuery = { _id: new ObjectId(candidateId) }
+            const candidateUpdateDoc = {
+                $set: {
+                    workStatus: 'assigned'
+                }
+            }
+            const candidateResult = await candidatesCollection.updateOne(candidateQuery, candidateUpdateDoc);
+
+            // log tracking
+            logTracking(trackingId, 'candidate-assigned')
+
+
+            res.send(candidateResult);
+        })
+
+        app.patch('/contests/:id/status', async (req, res) => {
+            const { submitStatus, candidateId, trackingId } = req.body;
+            const query = { _id: new ObjectId(req.params.id) }
+            const updatedDoc = {
+                $set: {
+                    submitStatus: submitStatus
+                }
+            }
+
+            if (submitStatus === 'prize-delivered') {
+                // update candidate information
+                const candidateQuery = { _id: new ObjectId(candidateId) }
+                const candidateUpdateDoc = {
+                    $set: {
+                        workStatus: 'available'
+                    }
+                }
+                const candidateResult = await candidatesCollection.updateOne(candidateQuery, candidateUpdateDoc);
+            }
+
+
+            const result = await contestsCollection.updateOne(query, updatedDoc);
+            // log tracking
+            logTracking(trackingId, submitStatus);
+            
+            res.send(result);
+
+        })
+
         app.delete("/contests/:id", async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) }
@@ -179,6 +289,9 @@ async function run() {
             const result = await contestsCollection.deleteOne(query);
             res.send(result);
         });
+
+
+
 
 
         // PAYMENTS 
@@ -277,6 +390,7 @@ async function run() {
                 const update = {
                     $set: {
                         paymentStatus: 'paid',
+                        submitStatus: 'submit-done',
                         trackingId: trackingId
                     }
                 }
@@ -296,7 +410,9 @@ async function run() {
                 }
 
                 if (session.payment_status === 'paid') {
-                    const resultPayment = await paymentCollection.insertOne(payment)
+                    const resultPayment = await paymentCollection.insertOne(payment);
+
+                    logTracking(trackingId, 'submit-done')
 
                     res.send({
                         success: true,
@@ -333,10 +449,19 @@ async function run() {
 
         // Candidates related apis
         app.get('/candidates', async (req, res) => {
+            const { status, contestType, workStatus } = req.query;
             const query = {}
-            if (req.query.status) {
-                query.status = req.query.status;
+
+            if (status) {
+                query.status = status;
             }
+            if (contestType) {
+                query.contestType = contestType;
+            }
+            if (workStatus) {
+                query.workStatus = workStatus;
+            }
+
             const cursor = candidatesCollection.find(query)
             const result = await cursor.toArray();
             res.send(result);
@@ -358,7 +483,8 @@ async function run() {
             const query = { _id: new ObjectId(id) }
             const updateDoc = {
                 $set: {
-                    status: status
+                    status: status,
+                    workStatus: 'available'
                 }
             }
 
@@ -366,7 +492,7 @@ async function run() {
 
             if (status === 'approved') {
                 const email = req.body.email;
-                const userQuery = { email  }
+                const userQuery = { email }
                 const updateUser = {
                     $set: {
                         role: 'candidate'
