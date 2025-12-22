@@ -5,14 +5,16 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
-
 const port = process.env.PORT || 3000
 const crypto = require("crypto");
 
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./idea-arena-firebase-adminsdk.json");
-const { create } = require('domain');
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
+
+
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -277,7 +279,7 @@ async function run() {
             const result = await contestsCollection.updateOne(query, updatedDoc);
             // log tracking
             logTracking(trackingId, submitStatus);
-            
+
             res.send(result);
 
         })
@@ -369,7 +371,7 @@ async function run() {
             const query = { transactionId: transactionId }
 
             const paymentExist = await paymentCollection.findOne(query);
-            console.log(paymentExist);
+            // console.log(paymentExist);
 
 
             if (paymentExist) {
@@ -511,10 +513,17 @@ async function run() {
             const result = await candidatesCollection.deleteOne(query);
             res.send(result);
         });
+        // trackings related apis
+        app.get('/trackings/:trackingId/logs', async (req, res) => {
+            const trackingId = req.params.trackingId;
+            const query = { trackingId }
+            const result = await trackingCollection.find(query).toArray();
+            res.send(result);
+        })
 
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
