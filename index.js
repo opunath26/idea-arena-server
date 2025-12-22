@@ -27,7 +27,7 @@ function generateTrackingId() {
     const random = crypto.randomBytes(3).toString("hex").toUpperCase();
 
 
-    return `${prefix}-$date-${random}`;
+    return `${prefix}-${date}-${random}`;
 }
 
 // middleware
@@ -97,7 +97,7 @@ async function run() {
                 trackingId,
                 status,
                 details: status.split('-').join(' '),
-                createAt: new Date()
+                createdAt: new Date()
             }
             const result = await trackingCollection.insertOne(log);
             return result;
@@ -119,7 +119,7 @@ async function run() {
                 ]
             }
 
-            const cursor = userCollection.find(query).sort({ createAt: -1 }).limit(5);
+            const cursor = userCollection.find(query).sort({ createdAt: -1 }).limit(5);
             const result = await cursor.toArray();
             res.send(result);
         })
@@ -141,7 +141,7 @@ async function run() {
         app.post('/users', async (req, res) => {
             const user = req.body;
             user.role = 'user';
-            user.createAt = new Date();
+            user.createdAt = new Date();
             const email = user.email;
             const userExists = await userCollection.findOne({ email })
 
@@ -181,7 +181,7 @@ async function run() {
                 query.submitStatus = submitStatus;
             }
 
-            const options = { sort: { createAt: -1 } }
+            const options = { sort: { createdAt: -1 } }
 
             const cursor = contestsCollection.find(query, options);
             const result = await cursor.toArray();
@@ -473,7 +473,7 @@ async function run() {
         app.post('/candidates', async (req, res) => {
             const candidate = req.body;
             candidate.status = 'pending';
-            candidate.createAt = new Date();
+            candidate.createdAt = new Date();
 
             const result = await candidatesCollection.insertOne(candidate);
             res.send(result);
