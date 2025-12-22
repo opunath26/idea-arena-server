@@ -11,13 +11,12 @@ const crypto = require("crypto");
 const admin = require("firebase-admin");
 
 
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
-const serviceAccount = JSON.parse(decoded);
-
-
-
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  }),
 });
 
 
@@ -198,7 +197,7 @@ async function run() {
                 // query.submitStatus = {$in: ['candidate-assigned', 'submission-approved']}
                 query.submitStatus = { $nin: ['prize-delivered'] }
             }
-            else{
+            else {
                 query.submitStatus = submitStatus;
             }
 
