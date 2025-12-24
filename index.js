@@ -118,7 +118,7 @@ async function run() {
                 ]
             }
 
-            const cursor = userCollection.find(query).sort({ createdAt: -1 }).limit(5);
+            const cursor = userCollection.find(query).sort({ createdAt: -1 });
             const result = await cursor.toArray();
             res.send(result);
         })
@@ -169,38 +169,27 @@ async function run() {
 
         // contests api
         app.get('/contests', async (req, res) => {
-            const query = {}
+            const query = {};
             const { email, submitStatus, search, contestType, limit } = req.query;
 
-            if (email) {
-                query.creatorEmail = email;
-            }
+            if (email) query.creatorEmail = email;
 
-            if (submitStatus) {
-                query.submitStatus = submitStatus;
-            }
+
+            if (submitStatus) query.submitStatus = submitStatus;
+
             if (search) {
                 query.$or = [
                     { contestTitle: { $regex: search, $options: 'i' } },
                     { contestType: { $regex: search, $options: 'i' } }
                 ];
             }
-            if (contestType) {
-                query.contestType = { $regex: contestType, $options: 'i' };
-            }
 
-            const options = { sort: { createdAt: -1 } }
+            const cursor = contestsCollection.find(query).sort({ createdAt: -1 });
+            if (limit) cursor.limit(parseInt(limit));
 
-            const cursor = contestsCollection.find(query, options);
-
-            if (limit) {
-                cursor.limit(parseInt(limit));
-            }
-
-            
             const result = await cursor.toArray();
             res.send(result);
-        })
+        });
 
         app.get('/contests/candidate', async (req, res) => {
             const { candidateEmail, submitStatus } = req.query;
@@ -377,17 +366,13 @@ async function run() {
 
         app.patch('/payment-success', async (req, res) => {
             const sessionId = req.query.session_id;
+            if (!sessionId) return res.status(400).send({ message: 'Session ID missing' });
 
             const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-            // console.log('session retrieve', session);
             const transactionId = session.payment_intent;
             const query = { transactionId: transactionId }
 
             const paymentExist = await paymentCollection.findOne(query);
-            // console.log(paymentExist);
-
-
             if (paymentExist) {
                 return res.send({
                     message: 'already exists',
@@ -396,18 +381,21 @@ async function run() {
                 })
             }
 
-
-
             const trackingId = generateTrackingId()
 
             if (session.payment_status === 'paid') {
                 const id = session.metadata.contestId;
                 const query = { _id: new ObjectId(id) }
+
+
                 const update = {
                     $set: {
                         paymentStatus: 'paid',
                         submitStatus: 'submit-done',
                         trackingId: trackingId
+                    },
+                    $inc: {
+                        participantsCount: 1
                     }
                 }
 
@@ -430,7 +418,7 @@ async function run() {
 
                     logTracking(trackingId, 'submit-done')
 
-                    res.send({
+                    return res.send({
                         success: true,
                         modifyContest: result,
                         trackingId: trackingId,
@@ -463,6 +451,34 @@ async function run() {
             res.send(result);
         })
 
+
+        // Admin Dashboard
+        app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+
+                const totalUsers = await userCollection.countDocuments();
+
+
+                const totalContests = await contestsCollection.countDocuments();
+
+
+                const pendingContests = await contestsCollection.countDocuments({ submitStatus: 'pending' });
+
+
+                const payments = await paymentCollection.find().toArray();
+                const totalRevenue = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+                res.send({
+                    totalUsers,
+                    totalContests,
+                    pendingContests,
+                    totalRevenue
+                });
+            } catch (error) {
+                res.status(500).send({ message: "Internal Server Error" });
+            }
+        });
+
         // Candidates related apis
         app.get('/candidates', async (req, res) => {
             const { status, contestType, workStatus } = req.query;
@@ -482,7 +498,6 @@ async function run() {
             const result = await cursor.toArray();
             res.send(result);
         })
-
 
         app.post('/candidates', async (req, res) => {
             const candidate = req.body;
